@@ -12,7 +12,6 @@ interface AppProps {
 
 type Block =
   | { kind: 'title' }
-  | { kind: 'header'; role: 'user' | 'assistant' }
   | { kind: 'content'; role: 'user' | 'assistant'; text: string }
 
 const HELP_TEXT = [
@@ -72,9 +71,7 @@ export function App({ client }: AppProps) {
     if (text === '/help') {
       setBlocks((b) => [
         ...b,
-        { kind: 'header', role: 'user' },
         { kind: 'content', role: 'user', text },
-        { kind: 'header', role: 'assistant' },
         { kind: 'content', role: 'assistant', text: HELP_TEXT },
       ])
       setMessages((m) => [...m, { role: 'user', content: text }, { role: 'assistant', content: HELP_TEXT }])
@@ -82,12 +79,7 @@ export function App({ client }: AppProps) {
     }
 
     const history = messages
-    setBlocks((b) => [
-      ...b,
-      { kind: 'header', role: 'user' },
-      { kind: 'content', role: 'user', text },
-      { kind: 'header', role: 'assistant' },
-    ])
+    setBlocks((b) => [...b, { kind: 'content', role: 'user', text }])
     setMessages((m) => [...m, { role: 'user', content: text }])
     setLoading(true)
     setCurrent('')
@@ -148,13 +140,6 @@ export function App({ client }: AppProps) {
                 </Box>
                 <Newline />
               </Box>
-            )
-          }
-          if (b.kind === 'header') {
-            return (
-              <Text key={i} bold color={b.role === 'user' ? 'green' : 'blue'}>
-                {b.role === 'user' ? '你' : 'Agent'}
-              </Text>
             )
           }
           return (
