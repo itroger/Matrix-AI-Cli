@@ -6,13 +6,13 @@
 
 - REPL 多轮对话，回车发送，流式打印 Agent 回复
 - `ink-spinner` 加载指示，`marked` + `marked-terminal` 渲染 Markdown
-- HTTP 流式通信（Vercel AI SDK Data Stream 协议），逐块接收
+- HTTP 流式通信（Vercel AI SDK UI Message Stream 协议），逐块接收
 - 可配置 Agent 地址：命令行参数 / 环境变量 / 默认值
 - 斜杠命令：`/help`、`/clear`、`/exit`（或 `/quit`）
 
 ## 环境要求
 
-- Node.js ≥ 18（推荐 20+）
+- Node.js ≥ 20
 - npm
 
 ## 安装
@@ -65,7 +65,7 @@ AGENT_URL=http://localhost:9000 npm run dev
 
 ## Agent 端约定
 
-CLI 向 `${AGENT_URL}/api/chat` 发送 POST 请求，按 [Vercel AI SDK Data Stream](https://sdk.vercel.ai/docs/ai-sdk-ui/streaming) 协议解析流式响应。默认连接 `http://localhost:8000`，即 Matrix-AI-Client 网关。
+CLI 向 `${AGENT_URL}/api/chat` 发送 POST 请求，按 [Vercel AI SDK UI Message Stream](https://sdk.vercel.ai/docs/ai-sdk-ui/streaming) 协议解析流式响应。默认连接 `http://localhost:8000`，即 Matrix-AI-Client 网关。
 
 ### 请求
 
@@ -75,32 +75,37 @@ Content-Type: application/json
 
 {
   "messages": [
-    { "role": "user", "content": "上一轮问题" },
-    { "role": "assistant", "content": "上一轮回答" },
-    { "role": "user", "content": "本次输入" }
+    { "id": "0", "role": "user", "parts": [{ "type": "text", "text": "上一轮问题" }] },
+    { "id": "1", "role": "assistant", "parts": [{ "type": "text", "text": "上一轮回答" }] },
+    { "id": "2", "role": "user", "parts": [{ "type": "text", "text": "本次输入" }] }
   ],
   "preferCloud": false
 }
 ```
 
-- `messages`：对话历史 + 本次输入（CLI 自动把当前输入追加到末尾）
+- `messages`：UIMessage 数组（`id` / `role` / `parts`），CLI 自动把当前输入追加到末尾
 - `preferCloud`：可选，`true` 强制走云端模型
 
-### 响应（AI SDK Data Stream）
+### 响应（AI SDK UI Message Stream）
 
-`Content-Type: text/plain; charset=utf-8`，每行 `<type>:<json>`：
+SSE 格式，每个事件 `data: {json}\n\n`，结束 `data: [DONE]`：
 
 ```
-0:"第一块文本"
-2:[{"toolCallId":"t1","toolName":"time","args":{}}]
-0:"第二块文本"
-d:{"finishReason":"stop"}
+data: {"type":"start"}
+
+data: {"type":"text-delta","id":"0","delta":"第一块文本"}
+
+data: {"type":"text-delta","id":"0","delta":"第二块文本"}
+
+data: {"type":"finish","finishReason":"stop"}
+
+data: [DONE]
 ```
 
-- `0:` 文本增量，CLI 顺序拼接并实时渲染
-- `2:` 工具调用，CLI 忽略（不在终端展示）
-- `e:` 流错误，CLI 抛出并提示
-- `d:` 结束本轮
+- `text-delta` → `delta` 文本增量，CLI 顺序拼接并实时渲染
+- `finish` → 结束本轮
+- `error` → `errorText` 错误信息，CLI 抛出并提示
+- 其余事件（`start` / `start-step` / `text-start` / `text-end` / `finish-step` / 工具相关）忽略
 - 非 2xx 状态码以 `⚠️ 连接失败` 提示
 
 ### 最小 Mock Agent 示例（Node 原生）
@@ -114,14 +119,20 @@ createServer((req, res) => {
     res.statusCode = 404
     return res.end('not found')
   }
-  res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' })
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  })
   const chunks = ['你好，', '我是本地 Agent。', '这是流式回复示例。']
+  res.write('data: {"type":"start"}\n\n')
   let i = 0
   const timer = setInterval(() => {
     if (i < chunks.length) {
-      res.write(`0:${JSON.stringify(chunks[i++])}\n`)
+      res.write(`data: ${JSON.stringify({ type: 'text-delta', textDelta: chunks[i++] })}\n\n`)
     } else {
-      res.write(`d:${JSON.stringify({ finishReason: 'stop' })}\n`)
+      res.write(`data: ${JSON.stringify({ type: 'finish', finishReason: 'stop' })}\n\n`)
+      res.write('data: [DONE]\n\n')
       clearInterval(timer)
       res.end()
     }
@@ -140,25 +151,23 @@ src/
 ├── config.ts                 # --url / AGENT_URL / 默认值
 ├── agent/client.ts           # HTTP 流式客户端（AI SDK Data Stream）
 ├── ui/App.tsx                # REPL 主组件
-├── ui/Markdown.tsx           # Markdown 组件（基于 renderMarkdown）
-├── ui/renderMarkdown.ts      # 轻量 markdown→ANSI 渲染（chalk）
-└── types/
+├── ui/Markdown.tsx           # Markdown 组件（marked + marked-terminal）
+└── types/marked-terminal.d.ts
 ```
 
 ## 技术栈
 
-| 用途           | 依赖            |
-| -------------- | --------------- |
-| 终端 UI        | ink, react      |
-| 加载动画       | ink-spinner     |
-| 输入框         | ink-text-input  |
-| Markdown 渲染  | chalk（自实现 renderMarkdown） |
-| CLI 参数解析   | commander       |
-| 开发运行       | tsx             |
-| 打包           | tsup            |
+| 用途           | 依赖                          |
+| -------------- | ----------------------------- |
+| 终端 UI        | ink v8, react 19              |
+| 加载动画       | ink-spinner v5                |
+| 输入框         | ink-text-input v6             |
+| Markdown 渲染  | marked v18, marked-terminal v8 |
+| CLI 参数解析   | commander v15                 |
+| 开发运行       | tsx v4                        |
+| 打包           | tsup v9                       |
+| 类型检查       | typescript v7                 |
 
 ## 说明
 
-- `ink-markdown` 官方包为 CJS 且 `require('ink')`，与 ink v5 的 ESM + top-level await 不兼容。
-- `marked-terminal` v6 的 renderer 是旧字符串接口，与 marked v5+ 不兼容（marked 会把 custom renderer 的方法拷贝到自身 Renderer 实例，导致 `this` 丢失，报 `this.o.text is not a function`）。
-- 故用 `chalk` 自实现轻量 markdown→ANSI 渲染（`src/ui/renderMarkdown.ts`），覆盖标题/加粗/斜体/列表/代码块/行内代码/引用/链接等常见语法。
+Markdown 渲染用 `marked` v18 + `marked-terminal` v8（均为 ESM，token-based renderer extension，`marked.use(markedTerminal())`）。未使用 `ink-markdown`（CJS，与 ink ESM 不兼容）。

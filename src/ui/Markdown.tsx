@@ -1,11 +1,15 @@
 import React from 'react'
 import { Text } from 'ink'
-import { renderMarkdown } from './renderMarkdown.js'
+import { Marked } from 'marked'
+import { markedTerminal } from 'marked-terminal'
 
 interface MarkdownProps {
   children: string
 }
 
 export function Markdown({ children }: MarkdownProps): React.ReactElement {
-  return <Text>{renderMarkdown(children)}</Text>
+  const marked = new Marked()
+  marked.use(markedTerminal())
+  const out = marked.parse(children, { async: false }) as string
+  return <Text>{out.trim()}</Text>
 }

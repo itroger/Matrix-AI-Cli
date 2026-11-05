@@ -18,10 +18,16 @@ export class AgentClient {
       : undefined
 
     try {
+      const toUIMessage = (m: ChatMessage, i: number) => ({
+        id: String(i),
+        role: m.role,
+        parts: [{ type: 'text' as const, text: m.content }],
+      })
       const messages = [
-        ...history,
-        { role: 'user' as const, content: message },
+        ...history.map(toUIMessage),
+        toUIMessage({ role: 'user', content: message }, history.length),
       ]
+
       const res = await fetch(`${this.url}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -46,20 +52,21 @@ export class AgentClient {
         buffer = lines.pop() ?? ''
         for (const line of lines) {
           const trimmed = line.trim()
-          if (!trimmed) continue
-          const colon = trimmed.indexOf(':')
-          if (colon < 0) continue
-          const type = trimmed.slice(0, colon)
-          let payload: unknown
+          if (!trimmed.startsWith('data:')) continue
+          const data = trimmed.slice(5).trim()
+          if (data === '[DONE]') return
+          let evt: { type?: string; delta?: string; textDelta?: string; errorText?: string }
           try {
-            payload = JSON.parse(trimmed.slice(colon + 1))
+            evt = JSON.parse(data)
           } catch {
             continue
           }
-          if (type === '0') {
-            const text = payload as string
+          if (evt.type === 'text-delta') {
+            const text = evt.delta ?? evt.textDelta
             if (text) yield text
-          } else if (type === 'd') {
+          } else if (evt.type === 'error') {
+            throw new Error(`Agent 流错误: ${evt.errorText ?? '未知错误'}`)
+          } else if (evt.type === 'finish') {
             return
           }
         }
