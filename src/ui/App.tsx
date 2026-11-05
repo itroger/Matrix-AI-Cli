@@ -1,4 +1,4 @@
-import React, { useCallback, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { Box, Newline, Static, Text, useApp } from 'ink'
 import TextInput from 'ink-text-input'
 import Spinner from 'ink-spinner'
@@ -9,6 +9,19 @@ import type { ChatMessage } from '../types.js'
 interface AppProps {
   client: AgentClient
 }
+
+const BANNER_LETTERS: Record<string, string[]> = {
+  M: ['█   █', '██ ██', '█ █ █', '█   █', '█   █'],
+  A: [' ███ ', '█   █', '█████', '█   █', '█   █'],
+  T: ['█████', '  █  ', '  █  ', '  █  ', '  █  '],
+  R: ['████ ', '█   █', '████ ', '█  █ ', '█   █'],
+  I: ['█████', '  █  ', '  █  ', '  █  ', '  █  '],
+  X: ['█   █', ' █ █ ', '  █  ', ' █ █ ', '█   █'],
+}
+
+const BANNER_LINES = Array.from({ length: 5 }, (_, row) =>
+  'MATRIX'.split('').map(ch => BANNER_LETTERS[ch][row]).join(' ')
+)
 
 type Block =
   | { kind: 'title' }
@@ -50,6 +63,12 @@ export function App({ client }: AppProps) {
   const [current, setCurrent] = useState('')
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+  const [cursorVisible, setCursorVisible] = useState(true)
+
+  useEffect(() => {
+    const t = setInterval(() => setCursorVisible(v => !v), 500)
+    return () => clearInterval(t)
+  }, [])
 
   const rawStreamTextRef = useRef('')
   const committedIndexRef = useRef(0)
@@ -133,10 +152,10 @@ export function App({ client }: AppProps) {
           if (b.kind === 'title') {
             return (
               <Box key={i} flexDirection="column">
-                <Box borderStyle="round" borderColor="cyan" paddingX={1}>
-                  <Text bold color="cyan">Matrix AI CLI</Text>
-                  <Text> </Text>
-                  <Text dimColor>→ {client.url}</Text>
+                <Box width={process.stdout.columns ?? 80} flexDirection="column" alignItems="center">
+                  {BANNER_LINES.map((line, r) => (
+                    <Text key={r} color="magenta">{line}</Text>
+                  ))}
                 </Box>
                 <Newline />
               </Box>
@@ -160,13 +179,13 @@ export function App({ client }: AppProps) {
         </Box>
       ) : null}
 
-      <Box borderStyle="round" borderColor="cyan" paddingX={1}>
+      <Box borderStyle="round" borderColor="magenta" paddingX={1}>
         <Text bold color="green">❯ </Text>
         <TextInput
           value={input}
           onChange={setInput}
           onSubmit={handleSubmit}
-          placeholder="输入消息回车发送（/help 查看命令）"
+          showCursor={cursorVisible && !loading}
         />
       </Box>
 
