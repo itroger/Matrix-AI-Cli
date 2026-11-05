@@ -7,9 +7,10 @@ interface MarkdownProps {
   children: string
 }
 
+const marked = new Marked()
+marked.use(markedTerminal())
+
 export function Markdown({ children }: MarkdownProps): React.ReactElement {
-  const marked = new Marked()
-  marked.use(markedTerminal())
   const out = marked.parse(children, { async: false }) as string
   return <Text>{out.trim()}</Text>
 }

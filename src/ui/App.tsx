@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react'
-import { Box, Newline, Text, useApp } from 'ink'
+import { Box, Newline, Static, Text, useApp } from 'ink'
 import TextInput from 'ink-text-input'
 import Spinner from 'ink-spinner'
 import { Markdown } from './Markdown.js'
@@ -73,28 +73,27 @@ export function App({ client }: AppProps) {
       </Box>
       <Newline />
 
-      {messages.map((m, i) => (
-        <Box key={i} flexDirection="column" marginBottom={1}>
-          <Text bold color={m.role === 'user' ? 'green' : 'blue'}>
-            {m.role === 'user' ? '你' : 'Agent'}
-          </Text>
-          {m.role === 'assistant' ? (
-            <Markdown>{m.content}</Markdown>
-          ) : (
-            <Text>{m.content}</Text>
-          )}
-        </Box>
-      ))}
+      <Static items={messages}>
+        {(m, i) => (
+          <Box key={i} flexDirection="column" marginBottom={1}>
+            <Text bold color={m.role === 'user' ? 'green' : 'blue'}>
+              {m.role === 'user' ? '你' : 'Agent'}
+            </Text>
+            {m.role === 'assistant' ? (
+              <Markdown>{m.content}</Markdown>
+            ) : (
+              <Text>{m.content}</Text>
+            )}
+          </Box>
+        )}
+      </Static>
 
       {loading && (
-        <Box flexDirection="column" marginBottom={1}>
-          <Box>
-            <Text color="yellow">
-              <Spinner type="dots" />
-            </Text>
-            <Text dimColor> {streaming ? '生成中…' : '思考中…'}</Text>
-          </Box>
-          {streaming ? <Markdown>{streaming}</Markdown> : null}
+        <Box marginBottom={1}>
+          <Text color="yellow">
+            <Spinner type="dots" />
+          </Text>
+          <Text dimColor> {streaming ? `生成中…（${streaming.length} 字）` : '思考中…'}</Text>
         </Box>
       )}
 
