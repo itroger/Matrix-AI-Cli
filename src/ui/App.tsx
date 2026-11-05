@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react'
+import React, { useCallback, useRef, useState } from 'react'
 import { Box, Newline, Static, Text, useApp } from 'ink'
 import TextInput from 'ink-text-input'
 import Spinner from 'ink-spinner'
@@ -10,6 +10,11 @@ interface AppProps {
   client: AgentClient
 }
 
+type Block =
+  | { kind: 'title' }
+  | { kind: 'header'; role: 'user' | 'assistant' }
+  | { kind: 'content'; role: 'user' | 'assistant'; text: string }
+
 const HELP_TEXT = [
   '**Matrix AI CLI 命令**',
   '',
@@ -18,12 +23,37 @@ const HELP_TEXT = [
   '- `/exit` 或 `/quit` 退出',
 ].join('\n')
 
+function partitionSafeBlocks(fullText: string): { newFinalized: string[]; remaining: string } {
+  const lines = fullText.split('\n')
+  let inCodeFence = false
+  const newFinalized: string[] = []
+  let currentBuffer: string[] = []
+
+  for (const line of lines) {
+    if (/^[ \t]*```/.test(line)) {
+      inCodeFence = !inCodeFence
+    }
+    currentBuffer.push(line)
+    if (!inCodeFence && line.trim() === '' && currentBuffer.slice(0, -1).some((l) => l.trim() !== '')) {
+      const blockContent = currentBuffer.join('\n').trim()
+      if (blockContent) newFinalized.push(blockContent)
+      currentBuffer = []
+    }
+  }
+
+  return { newFinalized, remaining: currentBuffer.join('\n') }
+}
+
 export function App({ client }: AppProps) {
   const { exit } = useApp()
   const [messages, setMessages] = useState<ChatMessage[]>([])
+  const [blocks, setBlocks] = useState<Block[]>([{ kind: 'title' }])
+  const [current, setCurrent] = useState('')
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
-  const [streaming, setStreaming] = useState('')
+
+  const rawStreamTextRef = useRef('')
+  const committedIndexRef = useRef(0)
 
   const handleSubmit = useCallback(async (value: string) => {
     const text = value.trim()
@@ -36,72 +66,117 @@ export function App({ client }: AppProps) {
     }
     if (text === '/clear') {
       setMessages([])
+      setBlocks([{ kind: 'title' }])
       return
     }
     if (text === '/help') {
-      setMessages((m) => [...m, { role: 'assistant', content: HELP_TEXT }])
+      setBlocks((b) => [
+        ...b,
+        { kind: 'header', role: 'user' },
+        { kind: 'content', role: 'user', text },
+        { kind: 'header', role: 'assistant' },
+        { kind: 'content', role: 'assistant', text: HELP_TEXT },
+      ])
+      setMessages((m) => [...m, { role: 'user', content: text }, { role: 'assistant', content: HELP_TEXT }])
       return
     }
 
     const history = messages
+    setBlocks((b) => [
+      ...b,
+      { kind: 'header', role: 'user' },
+      { kind: 'content', role: 'user', text },
+      { kind: 'header', role: 'assistant' },
+    ])
     setMessages((m) => [...m, { role: 'user', content: text }])
     setLoading(true)
-    setStreaming('')
+    setCurrent('')
+    rawStreamTextRef.current = ''
+    committedIndexRef.current = 0
+
+    const flush = () => {
+      const { newFinalized, remaining } = partitionSafeBlocks(rawStreamTextRef.current)
+      if (newFinalized.length > committedIndexRef.current) {
+        const newly = newFinalized.slice(committedIndexRef.current).map((raw) => ({
+          kind: 'content' as const,
+          role: 'assistant' as const,
+          text: raw,
+        }))
+        setBlocks((b) => [...b, ...newly])
+        committedIndexRef.current = newFinalized.length
+      }
+      setCurrent(remaining)
+    }
+
+    const timer = setInterval(flush, 50)
 
     try {
       let acc = ''
       for await (const chunk of client.chat(text, history)) {
         acc += chunk
-        setStreaming(acc)
+        rawStreamTextRef.current += chunk
       }
+      clearInterval(timer)
+      const { remaining } = partitionSafeBlocks(rawStreamTextRef.current)
+      if (remaining.trim()) {
+        setBlocks((b) => [...b, { kind: 'content', role: 'assistant', text: remaining.trim() }])
+      }
+      setCurrent('')
       setMessages((m) => [...m, { role: 'assistant', content: acc || '(空回复)' }])
     } catch (e) {
+      clearInterval(timer)
       const msg = (e as Error).name === 'AbortError' ? '请求超时' : (e as Error).message
+      setBlocks((b) => [...b, { kind: 'content', role: 'assistant', text: `⚠️ 连接失败: ${msg}` }])
       setMessages((m) => [...m, { role: 'assistant', content: `⚠️ 连接失败: ${msg}` }])
+      setCurrent('')
     } finally {
-      setStreaming('')
       setLoading(false)
     }
   }, [messages, loading, client, exit])
 
   return (
     <Box flexDirection="column">
-      <Box borderStyle="round" borderColor="cyan" paddingX={1}>
-        <Text bold color="cyan">Matrix AI CLI</Text>
-        <Text> </Text>
-        <Text dimColor>→ {client.url}</Text>
-      </Box>
-      <Newline />
-
-      <Static items={messages}>
-        {(m, i) => (
-          <Box key={i} flexDirection="column" marginBottom={1}>
-            <Text bold color={m.role === 'user' ? 'green' : 'blue'}>
-              {m.role === 'user' ? '你' : 'Agent'}
-            </Text>
-            {m.role === 'assistant' ? (
-              <Markdown>{m.content}</Markdown>
-            ) : (
-              <Text>{m.content}</Text>
-            )}
-          </Box>
-        )}
+      <Static items={blocks}>
+        {(b, i) => {
+          if (b.kind === 'title') {
+            return (
+              <Box key={i} flexDirection="column">
+                <Box borderStyle="round" borderColor="cyan" paddingX={1}>
+                  <Text bold color="cyan">Matrix AI CLI</Text>
+                  <Text> </Text>
+                  <Text dimColor>→ {client.url}</Text>
+                </Box>
+                <Newline />
+              </Box>
+            )
+          }
+          if (b.kind === 'header') {
+            return (
+              <Text key={i} bold color={b.role === 'user' ? 'green' : 'blue'}>
+                {b.role === 'user' ? '你' : 'Agent'}
+              </Text>
+            )
+          }
+          return (
+            <Box key={i} flexDirection="column" marginBottom={1}>
+              {b.role === 'assistant' ? (
+                <Markdown>{b.text}</Markdown>
+              ) : (
+                <Text>{b.text}</Text>
+              )}
+            </Box>
+          )
+        }}
       </Static>
 
-      {loading && (
-        <Box flexDirection="column" marginBottom={1}>
-          <Box>
-            <Text color="yellow">
-              <Spinner type="dots" />
-            </Text>
-            <Text dimColor> {streaming ? '生成中…' : '思考中…'}</Text>
-          </Box>
-          {streaming ? <Markdown>{streaming}</Markdown> : null}
+      {loading && current ? (
+        <Box marginBottom={1}>
+          <Markdown maxLines={Math.max((process.stdout.rows ?? 24) - 6, 4)}>{current}</Markdown>
         </Box>
-      )}
+      ) : null}
 
-      <Box borderStyle="single" paddingX={1}>
-        <Text color="green">❯ </Text>
+      <Box borderStyle="round" borderColor="cyan" paddingX={1}>
+        <Text bold color="green">❯ </Text>
         <TextInput
           value={input}
           onChange={setInput}
@@ -109,6 +184,15 @@ export function App({ client }: AppProps) {
           placeholder="输入消息回车发送（/help 查看命令）"
         />
       </Box>
+
+      {loading ? (
+        <Box>
+          <Text color="yellow">
+            <Spinner type="dots" />
+          </Text>
+          <Text dimColor> {current ? '生成中…' : '思考中…'}</Text>
+        </Box>
+      ) : null}
     </Box>
   )
 }

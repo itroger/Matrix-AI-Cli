@@ -1,108 +1,114 @@
 import React from 'react'
-import { Box, Text } from 'ink'
+import { Text } from 'ink'
 import { Marked } from 'marked'
-import type { Token, Tokens } from 'marked'
+import { markedTerminal } from 'marked-terminal'
+import { highlight } from 'cli-highlight'
+import type { Theme } from 'cli-highlight'
+import chalk from 'chalk'
 
 interface MarkdownProps {
   children: string
+  maxLines?: number
 }
 
-const marked = new Marked()
-
-function renderInline(tokens: Token[] | undefined): React.ReactNode {
-  if (!tokens || tokens.length === 0) return null
-  return tokens.map((t, i) => {
-    switch (t.type) {
-      case 'strong':
-        return <Text key={i} bold>{renderInline(t.tokens)}</Text>
-      case 'em':
-        return <Text key={i} italic>{renderInline(t.tokens)}</Text>
-      case 'codespan':
-        return <Text key={i} color="yellow">{(t as Tokens.Codespan).text}</Text>
-      case 'link':
-        return <Text key={i} color="blue">{renderInline(t.tokens)}</Text>
-      case 'del':
-        return <Text key={i} strikethrough color="gray">{renderInline(t.tokens)}</Text>
-      case 'br':
-        return '\n'
-      case 'image': {
-        const img = t as Tokens.Image
-        return <Text key={i} color="cyan">[图片: {img.text || img.href}]</Text>
-      }
-      case 'text': {
-        const tt = t as Tokens.Text
-        return tt.tokens ? renderInline(tt.tokens) : tt.text
-      }
-      case 'escape':
-        return (t as Tokens.Escape).text
-      case 'checkbox':
-        return (t as Tokens.Checkbox).checked ? '[x] ' : '[ ] '
-      default:
-        return (t as { text?: string }).text ?? ''
-    }
-  })
+const customTerminalTheme: Theme = {
+  keyword: chalk.hex('#FF7B72').bold,
+  built_in: chalk.hex('#79C0FF'),
+  string: chalk.hex('#A5D6FF'),
+  number: chalk.hex('#FFA657'),
+  comment: chalk.hex('#8B949E').italic,
+  function: chalk.hex('#D2A8FF'),
+  title: chalk.hex('#FFA657').bold,
+  params: chalk.hex('#E6EDF3'),
+  attr: chalk.hex('#79C0FF'),
+  literal: chalk.hex('#FF7B72'),
 }
 
-function renderBlocks(tokens: Token[]): React.ReactNode {
-  return tokens.map((t, i) => {
-    switch (t.type) {
-      case 'heading': {
-        const h = t as Tokens.Heading
-        return (
-          <Text key={i} bold color={h.depth === 1 ? 'magenta' : 'green'}>
-            {renderInline(h.tokens)}
-          </Text>
-        )
-      }
-      case 'paragraph':
-        return <Text key={i}>{renderInline((t as Tokens.Paragraph).tokens)}</Text>
-      case 'code':
-        return (
-          <Box key={i} flexDirection="column">
-            <Text color="yellow">{(t as Tokens.Code).text}</Text>
-          </Box>
-        )
-      case 'blockquote':
-        return (
-          <Box key={i} paddingLeft={1} flexDirection="column">
-            {renderBlocks((t as Tokens.Blockquote).tokens)}
-          </Box>
-        )
-      case 'list': {
-        const l = t as Tokens.List
-        return (
-          <Box key={i} flexDirection="column">
-            {l.items.map((item, j) => (
-              <Box key={j}>
-                <Text color="cyan">{l.ordered ? `${j + 1}. ` : '• '}</Text>
-                <Box flexDirection="column">{renderBlocks(item.tokens)}</Box>
-              </Box>
-            ))}
-          </Box>
-        )
-      }
-      case 'hr':
-        return <Text key={i} color="gray">{'─'.repeat(40)}</Text>
-      case 'space':
-        return null
-      case 'html':
-        return <Text key={i} color="gray">{(t as Tokens.HTML).text}</Text>
-      case 'text': {
-        const tt = t as Tokens.Text
-        return <Text key={i}>{tt.tokens ? renderInline(tt.tokens) : tt.text}</Text>
-      }
-      default:
-        return <Text key={i}>{(t as { text?: string }).text ?? ''}</Text>
-    }
-  })
-}
+function renderStyledCodeBlock(rawCode: string, lang = 'text', maxColumns = 80): string {
+  const cleanLang = (lang || 'TEXT').trim().toLowerCase()
+  const width = Math.min(Math.max(maxColumns - 4, 40), 90)
 
-export function Markdown({ children }: MarkdownProps): React.ReactElement {
-  let tokens: Token[]
+  let highlighted = rawCode
   try {
-    tokens = marked.lexer(children)
+    highlighted = highlight(rawCode, {
+      language: cleanLang,
+      theme: customTerminalTheme,
+      ignoreIllegals: true,
+    })
   } catch {
-    return <Text>{children}</Text>
+    highlighted = rawCode
   }
-  return <Box flexDirection="column">{renderBlocks(tokens)}</Box>
+
+  const lines = highlighted.split('\n')
+  const lineNumWidth = String(lines.length).length
+
+  const badge = chalk.bgHex('#238636').hex('#FFFFFF').bold(` ${cleanLang.toUpperCase()} `)
+  const visiblePrefixLen = 5 + cleanLang.length
+  const topBorderDashes = Math.max(0, width - visiblePrefixLen - 1)
+  const topBar = chalk.gray('╭─ ') + badge + chalk.gray(' ' + '─'.repeat(topBorderDashes) + '╮')
+
+  const bodyLines = lines.map((line, idx) => {
+    const lineNum = chalk.hex('#484F58')(String(idx + 1).padStart(lineNumWidth, ' '))
+    const separator = chalk.gray(' │ ')
+    return `${chalk.gray('│')} ${lineNum}${separator}${line}`
+  })
+
+  const bottomBar = chalk.gray('╰' + '─'.repeat(width) + '╯')
+
+  return ['\n', topBar, ...bodyLines, bottomBar, '\n'].join('\n')
+}
+
+function createCustomMarked(columns: number): Marked {
+  const instance = new Marked()
+  instance.use(markedTerminal({
+    reflowText: true,
+    width: columns,
+    showSectionPrefix: false,
+  }))
+  instance.use({
+    renderer: {
+      code({ text, lang }: { text: string; lang?: string }) {
+        return renderStyledCodeBlock(text, lang, columns)
+      },
+      codespan({ text }: { text: string }) {
+        return chalk.hex('#F0883E')(`\`${text}\``)
+      },
+    },
+  })
+  return instance
+}
+
+const markedParser = createCustomMarked(process.stdout.columns ?? 80)
+
+export function patchIncompleteMarkdown(text: string): string {
+  if (!text) return ''
+  let patched = text
+
+  const codeFences = patched.match(/^[ \t]*```/gm) || []
+  if (codeFences.length % 2 !== 0) {
+    return patched + '\n```'
+  }
+
+  const singleBackticks = (patched.match(/(?<!`)`(?!`)/g) || []).length
+  if (singleBackticks % 2 !== 0) patched += '`'
+
+  const boldMarkers = (patched.match(/\*\*/g) || []).length
+  if (boldMarkers % 2 !== 0) patched += '**'
+
+  const strikeMarkers = (patched.match(/~~/g) || []).length
+  if (strikeMarkers % 2 !== 0) patched += '~~'
+
+  return patched
+}
+
+export function Markdown({ children, maxLines }: MarkdownProps): React.ReactElement {
+  const safe = patchIncompleteMarkdown(children)
+  const out = (markedParser.parse(safe, { async: false }) as string).trim()
+  if (maxLines && maxLines > 0) {
+    const lines = out.split('\n')
+    if (lines.length > maxLines) {
+      return <Text>{lines.slice(-maxLines).join('\n')}</Text>
+    }
+  }
+  return <Text>{out}</Text>
 }
