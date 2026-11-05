@@ -89,11 +89,14 @@ export function App({ client }: AppProps) {
       </Static>
 
       {loading && (
-        <Box marginBottom={1}>
-          <Text color="yellow">
-            <Spinner type="dots" />
-          </Text>
-          <Text dimColor> {streaming ? `生成中…（${streaming.length} 字）` : '思考中…'}</Text>
+        <Box flexDirection="column" marginBottom={1}>
+          <Box>
+            <Text color="yellow">
+              <Spinner type="dots" />
+            </Text>
+            <Text dimColor> {streaming ? '生成中…' : '思考中…'}</Text>
+          </Box>
+          {streaming ? <Markdown>{streaming}</Markdown> : null}
         </Box>
       )}
 
