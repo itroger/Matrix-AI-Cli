@@ -10,6 +10,12 @@ use tokio::sync::mpsc;
 
 const HELP_TEXT: &str = "**Matrix AI CLI 命令**\n\n- `/help` 查看帮助\n- `/clear` 清空当前对话\n- `/exit` 或 `/quit` 退出";
 
+fn history_area_height() -> u16 {
+    crossterm::terminal::size()
+        .map(|(_, rows)| rows.saturating_sub(4))
+        .unwrap_or(20)
+}
+
 pub struct App {
     pub history: Vec<(Role, String)>,
     pub blocks: Vec<(Role, String)>,
@@ -19,6 +25,7 @@ pub struct App {
     pub cursor_visible: bool,
     pub should_quit: bool,
     pub spinner_index: usize,
+    pub scroll_offset: u16,
 }
 
 impl App {
@@ -32,6 +39,7 @@ impl App {
             cursor_visible: true,
             should_quit: false,
             spinner_index: 0,
+            scroll_offset: 0,
         }
     }
 
@@ -58,17 +66,20 @@ impl App {
                     self.blocks.clear();
                     self.history.clear();
                     self.current.clear();
+                    self.scroll_offset = 0;
                     return;
                 }
                 if text == "/help" {
                     self.blocks.push((Role::User, text.clone()));
                     self.blocks.push((Role::Assistant, HELP_TEXT.to_string()));
+                    self.scroll_offset = 0;
                     return;
                 }
                 self.blocks.push((Role::User, text.clone()));
                 self.history.push((Role::User, text.clone()));
                 self.loading = true;
                 self.current.clear();
+                self.scroll_offset = 0;
                 let url2 = url.to_string();
                 let history2 = self.history.clone();
                 let tx2 = agent_tx.clone();
@@ -84,6 +95,26 @@ impl App {
             }
             KeyCode::Esc => {
                 self.should_quit = true;
+            }
+            KeyCode::Up => {
+                self.scroll_offset = self.scroll_offset.saturating_add(1);
+            }
+            KeyCode::Down => {
+                self.scroll_offset = self.scroll_offset.saturating_sub(1);
+            }
+            KeyCode::PageUp => {
+                let step = history_area_height().saturating_div(2).max(1);
+                self.scroll_offset = self.scroll_offset.saturating_add(step);
+            }
+            KeyCode::PageDown => {
+                let step = history_area_height().saturating_div(2).max(1);
+                self.scroll_offset = self.scroll_offset.saturating_sub(step);
+            }
+            KeyCode::Home => {
+                self.scroll_offset = u16::MAX;
+            }
+            KeyCode::End => {
+                self.scroll_offset = 0;
             }
             _ => {}
         }
@@ -152,10 +183,16 @@ impl App {
         }
         let total = lines.len() as u16;
         let height = chunks[0].height;
-        let scroll = total.saturating_sub(height);
+        let max_scroll = total.saturating_sub(height);
+        let off = self.scroll_offset.min(max_scroll);
+        let scroll = max_scroll.saturating_sub(off);
         frame.render_widget(Paragraph::new(lines).scroll((scroll, 0)), chunks[0]);
 
-        if self.loading {
+        if off > 0 {
+            let hint = Line::from(format!(" ↑ 查看历史中（{} 行，按 End 回到最新）", off))
+                .style(Style::default().fg(Color::DarkGray));
+            frame.render_widget(Paragraph::new(hint), chunks[1]);
+        } else if self.loading {
             let spinner_chars = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
             let sc = spinner_chars
                 .chars()
