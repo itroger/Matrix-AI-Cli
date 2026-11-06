@@ -1,173 +1,80 @@
 # Matrix AI CLI
 
-基于 TypeScript + [Ink](https://github.com/vadimdemedes/ink) 的终端 CLI，通过 HTTP 流式连接本地 Agent（[Matrix-AI-Client](../Matrix-AI-Client) 网关），支持多轮对话、流式输出与 Markdown 渲染。
+基于 **Rust + Ratatui** 的命令行 AI 对话客户端，连接本地 Agent（Matrix-AI-Client 网关），支持 HTTP 流式（Vercel AI SDK UI Message Stream）。
 
-## 功能
+## 技术栈
 
-- REPL 多轮对话，回车发送，流式打印 Agent 回复
-- `ink-spinner` 加载指示，`marked` + `marked-terminal` 渲染 Markdown
-- HTTP 流式通信（Vercel AI SDK UI Message Stream 协议），逐块接收
-- 可配置 Agent 地址：命令行参数 / 环境变量 / 默认值
-- 斜杠命令：`/help`、`/clear`、`/exit`（或 `/quit`）
+| 组件 | 选型 |
+|------|------|
+| 语言 | Rust（edition 2021） |
+| TUI | ratatui 0.29 + crossterm 0.28 |
+| 异步运行时 | tokio |
+| HTTP 客户端 | reqwest（json + stream） |
+| 序列化 | serde / serde_json |
+| CLI 参数 | clap（`--url` / `AGENT_URL`） |
 
 ## 环境要求
 
-- Node.js ≥ 20
-- npm
+- Rust ≥ 1.89（toolchain stable）
+- 本地 Agent 运行于 `http://localhost:8000`（可配置）
 
-## 安装
-
-```bash
-npm install
-```
-
-## 使用
-
-### 开发模式（tsx 直跑）
+## 构建与运行
 
 ```bash
-npm run dev
-```
+# 调试构建并运行
+cargo run
 
-### 构建后运行
+# 发布构建
+cargo build --release
+./target/release/matrix-cli
 
-```bash
-npm run build
-node dist/index.js
-```
-
-### 类型检查
-
-```bash
-npm run typecheck
-```
-
-## 配置 Agent 地址
-
-优先级：命令行参数 > 环境变量 > 默认值（`http://localhost:8000`）。
-
-```bash
-# 命令行参数
-npm run dev -- --url http://localhost:9000
-node dist/index.js --url http://localhost:9000
-
-# 环境变量
-AGENT_URL=http://localhost:9000 npm run dev
+# 指定 Agent 地址
+cargo run -- --url http://localhost:9000
+AGENT_URL=http://localhost:9000 cargo run
 ```
 
 ## REPL 命令
 
-| 命令     | 作用           |
-| -------- | -------------- |
-| `/help`  | 查看帮助       |
-| `/clear` | 清空当前对话   |
-| `/exit`  | 退出（同 `/quit`） |
+| 命令 | 行为 |
+|------|------|
+| `/help` | 查看帮助 |
+| `/clear` | 清空当前对话 |
+| `/exit` `/quit` `Esc` | 退出 |
 
-## Agent 端约定
+## Agent 通信协议
 
-CLI 向 `${AGENT_URL}/api/chat` 发送 POST 请求，按 [Vercel AI SDK UI Message Stream](https://sdk.vercel.ai/docs/ai-sdk-ui/streaming) 协议解析流式响应。默认连接 `http://localhost:8000`，即 Matrix-AI-Client 网关。
+请求 `POST {url}/api/chat`，body：
 
-### 请求
-
-```http
-POST /api/chat
-Content-Type: application/json
-
+```json
 {
   "messages": [
-    { "id": "0", "role": "user", "parts": [{ "type": "text", "text": "上一轮问题" }] },
-    { "id": "1", "role": "assistant", "parts": [{ "type": "text", "text": "上一轮回答" }] },
-    { "id": "2", "role": "user", "parts": [{ "type": "text", "text": "本次输入" }] }
+    { "id": "0", "role": "user", "parts": [{ "type": "text", "text": "..." }] }
   ],
   "preferCloud": false
 }
 ```
 
-- `messages`：UIMessage 数组（`id` / `role` / `parts`），CLI 自动把当前输入追加到末尾
-- `preferCloud`：可选，`true` 强制走云端模型
+响应为 SSE 流，每行 `data: {json}`，按 `type` 字段分发：
 
-### 响应（AI SDK UI Message Stream）
-
-SSE 格式，每个事件 `data: {json}\n\n`，结束 `data: [DONE]`：
-
-```
-data: {"type":"start"}
-
-data: {"type":"text-delta","id":"0","delta":"第一块文本"}
-
-data: {"type":"text-delta","id":"0","delta":"第二块文本"}
-
-data: {"type":"finish","finishReason":"stop"}
-
-data: [DONE]
-```
-
-- `text-delta` → `delta` 文本增量，CLI 顺序拼接并实时渲染
-- `finish` → 结束本轮
-- `error` → `errorText` 错误信息，CLI 抛出并提示
-- 其余事件（`start` / `start-step` / `text-start` / `text-end` / `finish-step` / 工具相关）忽略
-- 非 2xx 状态码以 `⚠️ 连接失败` 提示
-
-### 最小 Mock Agent 示例（Node 原生）
-
-```js
-// mock-agent.mjs  —  node mock-agent.mjs
-import { createServer } from 'node:http'
-
-createServer((req, res) => {
-  if (req.method !== 'POST' || req.url !== '/api/chat') {
-    res.statusCode = 404
-    return res.end('not found')
-  }
-  res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
-    'Cache-Control': 'no-cache',
-    Connection: 'keep-alive',
-  })
-  const chunks = ['你好，', '我是本地 Agent。', '这是流式回复示例。']
-  res.write('data: {"type":"start"}\n\n')
-  let i = 0
-  const timer = setInterval(() => {
-    if (i < chunks.length) {
-      res.write(`data: ${JSON.stringify({ type: 'text-delta', textDelta: chunks[i++] })}\n\n`)
-    } else {
-      res.write(`data: ${JSON.stringify({ type: 'finish', finishReason: 'stop' })}\n\n`)
-      res.write('data: [DONE]\n\n')
-      clearInterval(timer)
-      res.end()
-    }
-  }, 300)
-}).listen(8000, () => console.log('mock agent on http://localhost:8000'))
-```
-
-启动 mock agent 后另开终端运行 `npm run dev` 即可联调。
+- `text-delta` → 取 `delta` 字段追加显示
+- `error` → 抛错
+- `finish` / `[DONE]` → 结束
 
 ## 项目结构
 
 ```
 src/
-├── index.tsx                 # 入口：解析配置 → 创建 client → render
-├── types.ts                  # 共享类型
-├── config.ts                 # --url / AGENT_URL / 默认值
-├── agent/client.ts           # HTTP 流式客户端（AI SDK Data Stream）
-├── ui/App.tsx                # REPL 主组件
-├── ui/Markdown.tsx           # Markdown 组件（marked + marked-terminal）
-└── types/marked-terminal.d.ts
+├── main.rs           # 入口 + 事件循环
+├── config.rs         # CLI 参数 / 环境变量
+├── agent/
+│   ├── mod.rs        # AgentEvent
+│   ├── types.rs      # UIMessage / Role / Part / ChatRequest / StreamEvent
+│   └── client.rs     # HTTP SSE 流式客户端
+└── ui/
+    ├── mod.rs
+    └── app.rs        # App 状态 + Ratatui 渲染 + 按键处理
 ```
 
-## 技术栈
+## 配置优先级
 
-| 用途           | 依赖                          |
-| -------------- | ----------------------------- |
-| 终端 UI        | ink v8, react 19              |
-| 加载动画       | ink-spinner v5                |
-| 输入框         | ink-text-input v6             |
-| Markdown 渲染  | marked v18, marked-terminal v8 |
-| CLI 参数解析   | commander v15                 |
-| 开发运行       | tsx v4                        |
-| 打包           | tsup v9                       |
-| 类型检查       | typescript v7                 |
-
-## 说明
-
-Markdown 渲染用 `marked` v18 + `marked-terminal` v8（均为 ESM，token-based renderer extension，`marked.use(markedTerminal())`）。未使用 `ink-markdown`（CJS，与 ink ESM 不兼容）。
+命令行参数 `--url` > 环境变量 `AGENT_URL` > 默认值 `http://localhost:8000`
